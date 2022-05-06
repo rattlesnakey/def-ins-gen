@@ -267,7 +267,7 @@ class Seq2SeqDataset(Dataset):
                 
             elif self.task == 'ins-gen':
                 word_ = "word: " + word
-                source = word_ + sememe +  " ".join(definition) 
+                source = word_ + sememe +  "definition: " + " ".join(definition) 
                 target = " ".join(example).replace('<TRG>', word)
                 
                 

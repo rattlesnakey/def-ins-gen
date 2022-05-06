@@ -11,7 +11,7 @@ NUM_EPOCHS=1
 
 MODEL=t5-small
 DATASET=wordnet
-TASK=def-gen
+TASK=ins-gen
 LR=3e-4
 DATA_DIR=../data/${DATASET}/
 T5_OUTPUT_DIR=../output/${DATASET}-${TASK}-${TRAIN_BATCH_SIZE}-${LR}/
