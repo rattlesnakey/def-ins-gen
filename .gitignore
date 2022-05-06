@@ -1,0 +1,6 @@
+data/
+pretrained_models/
+output/
+zip/
+.vscode/
+.history/
