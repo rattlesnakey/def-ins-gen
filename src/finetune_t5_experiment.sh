@@ -1,9 +1,10 @@
 #!/bin/bash
 ## Add parent directory to python path to access lightning_base.py
 # export PYTHONPATH="../":"${PYTHONPATH}"
+set -e 
 
-TRAIN_BATCH_SIZE=16
-TEST_BATCH_SIZE=4
+TRAIN_BATCH_SIZE=2
+TEST_BATCH_SIZE=1
 MAX_LEN=120
 BEAM_SIZE=100
 NUM_EPOCHS=1
@@ -11,14 +12,15 @@ NUM_EPOCHS=1
 MODEL=t5-small
 DATASET=wordnet
 TASK=def-gen
+LR=3e-4
 DATA_DIR=../data/${DATASET}/
-T5_OUTPUT_DIR=../output/${DATASET}-${TASK}/
+T5_OUTPUT_DIR=../output/${DATASET}-${TASK}-${TRAIN_BATCH_SIZE}-${LR}/
 T5_GENERAL_OUTPUT_DIR=../output/t5_general/${DATASET}/
 T5_SPECIFIC_OUTPUT_DIR=../output/t5_specific/${DATASET}/
-SCORE_DIR=../output/evaluation_scores-${TASK}/
+# SCORE_DIR=../output/evaluation_scores-${TASK}-${TRAIN_BATCH_SIZE}-${LR}/
 SCORE_TYPE=nist
 
-mkdir -p ${SCORE_DIR}
+# mkdir -p ${SCORE_DIR}
 mkdir -p ${T5_OUTPUT_DIR}
 
 # might need to change permission  eg. chmod +x ./sentence-bleu
@@ -29,7 +31,16 @@ mkdir -p ${T5_OUTPUT_DIR}
 # train T5
 # export CUDA_VISIBLE_DEVICES=0
 #! --gpus 0 表示用 cpu, --gpus 1 的时候就是用一个 GPU
-python finetune.py --model_name_or_path $MODEL --data_dir $DATA_DIR --learning_rate 3e-4 --early_stopping_patience 5 --train_batch_size $TRAIN_BATCH_SIZE --eval_batch_size $TEST_BATCH_SIZE --output_dir $T5_OUTPUT_DIR --max_source_length $MAX_LEN --max_target_length $MAX_LEN --num_train_epochs $NUM_EPOCHS --gpus 0 --do_train --option "" --task $TASK
+#! sample 是采样几条数据来测试，完整跑的时候不用传
+python -u finetune.py --model_name_or_path $MODEL \
+    --data_dir $DATA_DIR --learning_rate $LR \
+    --early_stopping_patience 5 --train_batch_size $TRAIN_BATCH_SIZE \
+    --eval_batch_size $TEST_BATCH_SIZE --output_dir $T5_OUTPUT_DIR \
+    --max_source_length $MAX_LEN --max_target_length $MAX_LEN \
+    --num_train_epochs $NUM_EPOCHS --gpus 0 --do_train \
+    --task $TASK \
+    --sample 4 \
+    --test_dataset test
 
 # train T5-specific 
 # export CUDA_VISIBLE_DEVICES=1
@@ -40,7 +51,7 @@ python finetune.py --model_name_or_path $MODEL --data_dir $DATA_DIR --learning_r
 # python finetune.py --model_name_or_path $MODEL --data_dir $DATA_DIR --learning_rate 3e-4 --early_stopping_patience 5 --train_batch_size $TRAIN_BATCH_SIZE --eval_batch_size $TEST_BATCH_SIZE --output_dir $T5_GENERAL_OUTPUT_DIR --max_source_length $MAX_LEN --max_target_length $MAX_LEN --num_train_epochs $NUM_EPOCHS --gpus 1 --do_train --option "t5_general" &
 # wait
 
-echo "model training finished" > ${SCORE_DIR}progress.txt
+# echo "model training finished" > ${SCORE_DIR}progress.txt
 # -------------------------------------------------
 # generate predictions for validation set and test set
 

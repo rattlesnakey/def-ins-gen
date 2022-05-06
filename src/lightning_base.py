@@ -366,11 +366,11 @@ def generic_train(
 
     if args.gpus > 1:
         train_params["distributed_backend"] = "ddp"
-
+    #! 没有传入 logging callback
     trainer = pl.Trainer.from_argparse_args(
         args,
         weights_summary=None,
-        callbacks=[logging_callback] + extra_callbacks,
+        callbacks=[] + extra_callbacks,
         logger=logger,
         checkpoint_callback=checkpoint_callback,
         early_stop_callback=early_stopping_callback,

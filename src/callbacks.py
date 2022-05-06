@@ -31,13 +31,14 @@ class Seq2SeqLoggingCallback(pl.Callback):
         self, trainer: pl.Trainer, pl_module: pl.LightningModule, type_path: str, save_generations=True
     ) -> None:
         logger.info(f"***** {type_path} results at step {trainer.global_step:05d} *****")
+        #! test_epoch_end 返回的字典就是这里的 metric
         metrics = trainer.callback_metrics
         trainer.logger.log_metrics({k: v for k, v in metrics.items() if k not in ["log", "progress_bar", "preds"]})
         # Log results
         od = Path(pl_module.hparams.output_dir)
         if type_path == "test":
             results_file = od / "test_results.txt"
-            generations_file = od / "test_generations.txt"
+            # generations_file = od / "test_generations.txt"
         else:
             # this never gets hit. I prefer not to save intermediate generations, and results are in metrics.json
             # If people want this it will be easy enough to add back.
@@ -45,6 +46,7 @@ class Seq2SeqLoggingCallback(pl.Callback):
             generations_file = od / f"{type_path}_generations/{trainer.global_step:05d}.txt"
             results_file.parent.mkdir(exist_ok=True)
             generations_file.parent.mkdir(exist_ok=True)
+            
         #! 这里的 metrics 是 trainer.callback_metrics 返回的，要改成把 bleu 这些也都返回才行
         with open(results_file, "a+") as writer:
             for key in sorted(metrics):
@@ -77,17 +79,18 @@ class Seq2SeqLoggingCallback(pl.Callback):
     #! 就是把训练过程中所有中间的 Metric 值保存下来
     @rank_zero_only
     def on_test_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
-        save_json(pl_module.metrics, pl_module.metrics_save_path)
+        # save_json(pl_module.metrics, pl_module.metrics_save_path)
         return self._write_logs(trainer, pl_module, "test")
 
     @rank_zero_only
     def on_validation_end(self, trainer: pl.Trainer, pl_module):
-        save_json(pl_module.metrics, pl_module.metrics_save_path)
+        pass
+        # save_json(pl_module.metrics, pl_module.metrics_save_path)
         # Uncommenting this will save val generations
         # return self._write_logs(trainer, pl_module, "valid")
 
 
-def get_checkpoint_callback(output_dir, metric, save_top_k=1, lower_is_better=False):
+def get_checkpoint_callback(output_dir, metric, save_top_k=2, lower_is_better=False):
     """Saves the best model by validation ROUGE2 score."""
     if metric == "rouge2":
         exp = "{val_avg_rouge2:.4f}-{step_count}"

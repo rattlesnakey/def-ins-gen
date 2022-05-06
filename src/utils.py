@@ -30,10 +30,12 @@ def lmap(f: Callable, x: Iterable) -> List:
     return list(map(f, x))
 
 
+#! 把有效的 batch 提出来，就是没有 pad token 的列
 def trim_batch(
     input_ids, pad_token_id, attention_mask=None,
 ):
     """Remove columns that are populated exclusively by pad_token_id"""
+    #! ne 是不等于的意思，返回的是 bool tensor
     keep_column_mask = input_ids.ne(pad_token_id).any(dim=0)
     if attention_mask is None:
         return input_ids[:, keep_column_mask]
@@ -105,7 +107,7 @@ class Seq2SeqDataset(Dataset):
 
         source_ids = self.inputs[index]["input_ids"].squeeze()
         target_ids = self.targets[index]["input_ids"].squeeze()
-
+        #! src_mask 和 tgt_mask 一样，这是有问题的
         src_mask    = self.inputs[index]["attention_mask"].squeeze()  # might need to squeeze
         target_mask = self.targets[index]["attention_mask"].squeeze()  # might need to squeeze
         
@@ -192,11 +194,8 @@ class Seq2SeqDataset(Dataset):
             for w in word_egs[i][1]:
                 eg_id.append(w)
             #! (word, definition, examples)
-            #! 例句生成的话就换下顺序
-            if self.task == 'def-gen':
-                word_char_vec_desc_eg.append((word, desc, eg_id))
-            elif self.task == 'ins-gen':
-                word_char_vec_desc_eg.append((word, eg_id, desc))
+            
+            word_char_vec_desc_eg.append((word, desc, eg_id))
         return word_char_vec_desc_eg  
 
     def read_beams(self, path, ignore_sense_id):
@@ -237,39 +236,41 @@ class Seq2SeqDataset(Dataset):
 
     #! encode 成 id
     def encode(self, data, ignore_duplicates, option, data_dir):
-        data_ = []
-        data_ = data        
         sememe = ""
-
-        leng = len(data_)
-        for index, (word, definition, example) in enumerate(data_):
+        for index, (word, definition, example) in enumerate(data):
             #! 这是之前的人改的代码，用来测试用的
             if self.sample:
-                if index>self.sample:
+                if index + 1 > self.sample:
                     break  
             #! 这里指定数据的输入格式
-            word_ = "word: " + word
-            context = " context: "+" ".join(example).replace('<TRG>', word)
             sememe = "　"
-            
-            if option:
-                if option == "t5_general":
-                    context = " "
-                elif option == "t5_specific":
-                    sememe = "" 
-                    word_ = ""
-                    context =  " definition: "+" ".join(definition)   # input is definition 
-                    #! 他这边把 <TRG> 给替换回来了
-                    definition = [" ".join(example).replace('<TRG>', word)]  # output is context  
-                elif option.startswith("forward"):  
-                    sememe = " "
-                else:
-                    sememe = ' {}: '.format(option) + " ".join(sems[index]) if (sems[index][0]!='') else ""
-
                 
-            source = word_ + sememe + context  
-            #! tokens 拼接成
-            target = " ".join(definition) 
+            # if option:
+            #     if option == "t5_general":
+            #         context = " "
+            #     elif option == "t5_specific":
+            #         sememe = "" 
+            #         word_ = ""
+            #         context =  " definition: "+" ".join(definition)   # input is definition 
+            #         #! 他这边把 <TRG> 给替换回来了
+            #         definition = [" ".join(example).replace('<TRG>', word)]  # output is context  
+            #     elif option.startswith("forward"):  
+            #         sememe = " "
+            #     else:
+            #         sememe = ' {}: '.format(option) + " ".join(sems[index]) if (sems[index][0]!='') else ""
+                        #! 例句生成的话就换下顺序
+            if self.task == 'def-gen':
+                word_ = "word: " + word
+                context = " context: "+" ".join(example).replace('<TRG>', word)
+                source = word_ + sememe + context  
+                target = " ".join(definition) 
+                
+            elif self.task == 'ins-gen':
+                word_ = "word: " + word
+                source = word_ + sememe +  " ".join(definition) 
+                target = " ".join(example).replace('<TRG>', word)
+                
+                
             src = self.tokenizer.batch_encode_plus(
                   [source], max_length=self.max_source_length, pad_to_max_length=True, truncation=True, return_tensors="pt"
               )
@@ -278,10 +279,12 @@ class Seq2SeqDataset(Dataset):
               )            
             
             e = self.tokenizer.encode(word)[:-1]
-            if len(e)<1:
+            if len(e) < 1:
                 e = [2]
+                
             self.inputs.append(src)
             self.targets.append(trg)    
+            #! 就是单纯这个词
             self.target_word.append(e)  # remove eos token
                  
         print(len(self.inputs))           
@@ -293,11 +296,16 @@ class Seq2SeqDataset(Dataset):
         target_ids = torch.stack([x["target_ids"] for x in batch])
         
         pad_token_id = self.pad_token_id
+        
+        #! 对 batch 数据进行清除，感觉这里有问题
+        #! 只把都没有 pad_token_id 的保存下来，其他都去掉，这是不对的吧
+        #! 感觉这边所有的得重写
         source_ids, source_mask = trim_batch(input_ids, pad_token_id, attention_mask=masks)        
         y = trim_batch(target_ids, pad_token_id)
         
         words = [x["target_word"] for x in batch]
-
+        #! target_word 就是被释义词
+        #! 这边 attention_mask 是 source_mask, 没有 tgt_mask, 是有问题的
         batch = {
             "input_ids": source_ids,
             "attention_mask": source_mask,
