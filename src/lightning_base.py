@@ -374,10 +374,14 @@ def generic_train(
         logger=logger,
         checkpoint_callback=checkpoint_callback,
         early_stop_callback=early_stopping_callback,
+        # auto_lr_find=args.auto_lr,
+        # auto_select_gpus=args.auto_gpus,
         **train_params,
     )
     #! 这边 fit 来 train，只有 do_train 才会 train
     if args.do_train:
+        # if args.auto_lr or args.auto_gpus:
+        #     trainer.tune(model)
         trainer.fit(model)
 
     return trainer

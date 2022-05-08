@@ -79,10 +79,12 @@ self_ref: true
 sync_batchnorm: false
 task: ins-gen
 terminate_on_nan: false
+test_checkpoint: ../output/wordnet-ins-gen-baseline-1-3e-4/val_avg_bleu=0.1735-epoch_count=2_v0.ckpt
 test_dataset: test
 test_max_target_length: 150
 test_percent_check: null
 tokenizer_name: null
+tpu_cores: null
 track_grad_norm: -1
 train_batch_size: 1
 train_percent_check: null

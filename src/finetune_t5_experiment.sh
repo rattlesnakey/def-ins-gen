@@ -3,7 +3,7 @@
 # export PYTHONPATH="../":"${PYTHONPATH}"
 set -e 
 
-TRAIN_BATCH_SIZE=2
+TRAIN_BATCH_SIZE=1
 TEST_BATCH_SIZE=1
 MAX_LEN=120
 BEAM_SIZE=100
@@ -11,14 +11,17 @@ NUM_EPOCHS=1
 
 MODEL=t5-small
 DATASET=wordnet
-TASK=ins-gen
+TASK=ins-gen-and-def-gen #! ins-gen-and-def-gen-with-contras
 LR=3e-4
 DATA_DIR=../data/${DATASET}/
-T5_OUTPUT_DIR=../output/${DATASET}-${TASK}-${TRAIN_BATCH_SIZE}-${LR}/
-T5_GENERAL_OUTPUT_DIR=../output/t5_general/${DATASET}/
-T5_SPECIFIC_OUTPUT_DIR=../output/t5_specific/${DATASET}/
+PROMPT=prompt3  #! baseline, prompt1, prompt2, prompt3 
+T5_OUTPUT_DIR=../output/${DATASET}-${TASK}-${PROMPT}-${TRAIN_BATCH_SIZE}-${LR}/
+DEF_GEN_RATIO=0.5
+INS_GEN_RATIO=0.5
+# T5_GENERAL_OUTPUT_DIR=../output/t5_general/${DATASET}/
+# T5_SPECIFIC_OUTPUT_DIR=../output/t5_specific/${DATASET}/
 # SCORE_DIR=../output/evaluation_scores-${TASK}-${TRAIN_BATCH_SIZE}-${LR}/
-SCORE_TYPE=nist
+# SCORE_TYPE=nist
 
 # mkdir -p ${SCORE_DIR}
 mkdir -p ${T5_OUTPUT_DIR}
@@ -37,9 +40,12 @@ python -u finetune.py --model_name_or_path $MODEL \
     --early_stopping_patience 5 --train_batch_size $TRAIN_BATCH_SIZE \
     --eval_batch_size $TEST_BATCH_SIZE --output_dir $T5_OUTPUT_DIR \
     --max_source_length $MAX_LEN --max_target_length $MAX_LEN \
-    --num_train_epochs $NUM_EPOCHS --gpus 0 --do_train \
+    --num_train_epochs $NUM_EPOCHS --gpus 0 --do_train --do_predict \
     --task $TASK \
-    --sample 4 \
+    --prompt $PROMPT \
+    --sample 2 \
+    --num_workers 1 \
+    --ins_gen_ratio $INS_GEN_RATIO --def_gen_ratio $DEF_GEN_RATIO \
     --test_dataset test
 
 # train T5-specific 

@@ -50,7 +50,8 @@ class Seq2SeqDataset(Dataset):
         data_dir,
         max_source_length,
         max_target_length,
-        option,
+        prompt,
+        # option,
         self_ref=True,
         type_path="train", #! 默认是 train
         sample=None,
@@ -66,8 +67,9 @@ class Seq2SeqDataset(Dataset):
         else:
             self.ignore_duplicates = False
         #! 这个是 both
-        self.train_src = 'both'
-        self.option = option
+        # self.train_src = 'both'
+        self.prompt = prompt
+        # self.option = option
         self.data_dir = data_dir
         #! 默认是 True
         self.self_ref = self_ref
@@ -79,32 +81,36 @@ class Seq2SeqDataset(Dataset):
         self.task = task
         self.sample = sample
         #! 这边就是具体读取相应的文件，就是 train.txt, val.txt, test.txt
-        self.data, self.data_ntoken, self.ref_data = self.tokenize((data_dir+'{}.txt'.format(type_path.split('_')[-1])), self.ignore_sense_id, self.train_src)
+        self.data, self.data_ntoken, self.ref_data = self.tokenize((data_dir+'{}.txt'.format(type_path.split('_')[-1])), self.ignore_sense_id)
         #! 就是看是不是测试阶段，如果是，就读取 beams
-        if (option.startswith('t5_specific') or option.startswith('forward') or option.startswith('t5_general') ) and (type_path=='test' or type_path=='test_val'):
-            self.data_word_egs = self.read_beams((data_dir+'{}.forward'.format(type_path.split('_')[-1])), self.ignore_sense_id)
-            self.data = self.add_beams(self.data, self.data_word_egs)                 
-        else:
-            #! 这个是 train 阶段对应的读取数据的部分
-            #! 这个是把例句读取进来
-            self.data_word_egs = self.read_examples((data_dir+'{}.eg'.format(type_path.split('_')[-1])), self.ignore_sense_id)
-            #! 把例句拼上去
-            #! self.data 是 [(word, [definition_tokens])]
-            self.data = self.add_examples(self.data, self.data_word_egs)
+        # if (option.startswith('t5_specific') or option.startswith('forward') or option.startswith('t5_general') ) and (type_path=='test' or type_path=='test_val'):
+        #     self.data_word_egs = self.read_beams((data_dir+'{}.forward'.format(type_path.split('_')[-1])), self.ignore_sense_id)
+        #     self.data = self.add_beams(self.data, self.data_word_egs)                 
+        # else:
+        #! 这个是 train 阶段对应的读取数据的部分
+        #! 这个是把例句读取进来
+        self.data_word_egs = self.read_examples((data_dir+'{}.eg'.format(type_path.split('_')[-1])), self.ignore_sense_id)
+        #! 把例句拼上去
+        #! self.data 是 [(word, [definition_tokens])]
+        self.data = self.add_examples(self.data, self.data_word_egs)
 
         self.tokenizer = tokenizer
+        
+        #! 记录每个 sample 是 ins-gen 还是 def-gen, def-gen 是0，ins-gen 是1
+        self.task_ids = []
         self.inputs = []
         self.targets = []
         self.target_word = []        
         #! 前面只是把数据读进来而已，还没 encode 成 id，这边 encode 成 id
-        self.encode(self.data, self.ignore_duplicates, option, data_dir)
-        print(option)
+        self.encode(self.data, self.ignore_duplicates, data_dir)
+        # print(option)
        
     def __len__(self):
         return len(self.inputs)
 
     def __getitem__(self, index) -> Dict[str, torch.Tensor]:
-
+        
+        #! 因为前面用的是 batch_encode, 所以这里要 squeeze
         source_ids = self.inputs[index]["input_ids"].squeeze()
         target_ids = self.targets[index]["input_ids"].squeeze()
         #! src_mask 和 tgt_mask 一样，这是有问题的
@@ -113,12 +119,15 @@ class Seq2SeqDataset(Dataset):
         
         word = self.target_word[index]
         
+        #! 加了个 task_id
+        task_id = self.task_ids[index]
+        
         return {"source_ids": source_ids, "source_mask": src_mask,
-                "target_ids": target_ids, "target_mask": target_mask, "target_word": word}   
+                "target_ids": target_ids, "target_mask": target_mask, "target_word": word, "task_id":task_id}   
         
         
     #! train_src = both 的时候，不会执行 continue
-    def tokenize(self, path, ignore_sense_id, train_src, test_num=None):
+    def tokenize(self, path, ignore_sense_id):
         word_desc = []  # [(srcWord0, [trgId0, trgId1, ...]), (srcWord1, [trgId0, trgId1, ...])]
         word_desc_orig = [] # [(srcWord0, [trgWord0, trgWord1, ...]), ... ]
         #! 这个是 refs 不是 ref
@@ -127,16 +136,16 @@ class Seq2SeqDataset(Dataset):
         ntoken = 0
         ref = {}
         #! train_src 是数据来源，一开始指定的是 both
-        if train_src not in set(['wordnet', 'gcide', 'both']):
-            sys.stderr.write("train_src has to be one of {'wordnet' | 'gcide' | 'both'}\n")
-            exit()
+        # if train_src not in set(['wordnet', 'gcide', 'both']):
+        #     sys.stderr.write("train_src has to be one of {'wordnet' | 'gcide' | 'both'}\n")
+        #     exit()
         
         with open(path, 'r', encoding='utf-8') as f:
             for index,line in enumerate(f):
                 elems = line.strip().split('\t')
-                #! 指定 both 的时候，不会 continue
-                if train_src in set(['wordnet', 'gcide']) and train_src != elems[2]:
-                    continue
+                # #! 指定 both 的时候，不会 continue
+                # if train_src in set(['wordnet', 'gcide']) and train_src != elems[2]:
+                #     continue
 
                 word = elems[0]
                 #! word without id
@@ -153,9 +162,9 @@ class Seq2SeqDataset(Dataset):
                     ref[word_wo_id] = []
                 # do not add references containing target word  
                 #! 这里不执行
-                if self.self_ref==False and word_wo_id in elems[3].split() and self.type_path.split('_')[-1]!='test':
-                    self.self_refs.append(index)     
-                    continue
+                # if self.self_ref==False and word_wo_id in elems[3].split() and self.type_path.split('_')[-1]!='test':
+                #     self.self_refs.append(index)     
+                #     continue
                 #! append 一个释义， elem[3] 是释义，是个 string
                 ref[word_wo_id].append(elems[3])
     
@@ -234,16 +243,39 @@ class Seq2SeqDataset(Dataset):
             word_char_vec_desc_eg.append((word_char_vec_desc[int(i/beam)][0], pred_def, contexts[int(i/beam)][1]))
         return word_char_vec_desc_eg  
 
+    def encode_each_input(self, source, target, word, task_id):
+        src = self.tokenizer.batch_encode_plus(
+                  [source], max_length=self.max_source_length, pad_to_max_length=True, truncation=True, return_tensors="pt"
+              )
+        trg = self.tokenizer.batch_encode_plus(
+                  [target], max_length=self.max_source_length, pad_to_max_length=True, truncation=True, return_tensors="pt"
+              )            
+        #! 返回的是一个 list tokens，不是二维的，所以不用 squeeze
+        e = self.tokenizer.encode(word)[:-1]
+        if len(e) < 1:
+            e = [2]
+        
+        #! 这个地方，不要 [task_id], 
+        self.task_ids.append(task_id)
+        self.inputs.append(src)
+        self.targets.append(trg)    
+        #! 就是单纯这个词
+        self.target_word.append(e)  # remove eos token
+
+
+            
+        
+    
     #! encode 成 id
-    def encode(self, data, ignore_duplicates, option, data_dir):
-        sememe = ""
+    def encode(self, data, ignore_duplicates, data_dir):
         for index, (word, definition, example) in enumerate(data):
             #! 这是之前的人改的代码，用来测试用的
             if self.sample:
                 if index + 1 > self.sample:
                     break  
             #! 这里指定数据的输入格式
-            sememe = "　"
+            #! 两个空格
+            sememe = "  "
                 
             # if option:
             #     if option == "t5_general":
@@ -260,32 +292,148 @@ class Seq2SeqDataset(Dataset):
             #         sememe = ' {}: '.format(option) + " ".join(sems[index]) if (sems[index][0]!='') else ""
                         #! 例句生成的话就换下顺序
             if self.task == 'def-gen':
-                word_ = "word: " + word
-                context = " context: "+" ".join(example).replace('<TRG>', word)
-                source = word_ + sememe + context  
-                target = " ".join(definition) 
+                task_id = 0
+                if self.prompt == 'baseline':
+                    word_ = "word: " + word
+                    context = " context: " + " ".join(example).replace('<TRG>', word)
+                    source = word_ + sememe + context  
+                    target = " ".join(definition) 
+                
+                elif self.prompt == 'prompt1':
+                    word_ = "word: " + word
+                    context = " context: "+" ".join(example).replace('<TRG>', word)
+                    defintion = " ".join(definition) 
+                    source = '<definition> ' + word_ + sememe + context
+                    target = '<definition> ' + definition
+                    
+                elif self.prompt == 'prompt2':
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " ".join(definition) 
+                    source = f'{word} in context "{context}" means <extra_id_0>'
+                    target = '<extra_id_0> ' + definition
+                
+                elif self.prompt == 'prompt3':
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " ".join(definition) 
+                    source = f'<definition> {word} in context "{context}" means <extra_id_0>'
+                    target = '<definition> <extra_id_0> ' + definition
+                    
+                self.encode_each_input(source, target, word, task_id)
+                
+                
                 
             elif self.task == 'ins-gen':
-                word_ = "word: " + word
-                source = word_ + sememe +  "definition: " + " ".join(definition) 
-                target = " ".join(example).replace('<TRG>', word)
+                task_id =1
+                if self.prompt == 'baseline':
+                    word_ = "word: " + word
+                    source = word_ + sememe +  " definition: " + " ".join(definition) 
+                    target = " ".join(example).replace('<TRG>', word)
                 
+                elif self.prompt == 'prompt1':
+                    word_ = "word: " + word
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " definition: " + " ".join(definition) 
+                    source = '<instance> ' + word_ + sememe + definition
+                    target = '<instance> ' + context
                 
-            src = self.tokenizer.batch_encode_plus(
-                  [source], max_length=self.max_source_length, pad_to_max_length=True, truncation=True, return_tensors="pt"
-              )
-            trg = self.tokenizer.batch_encode_plus(
-                  [target], max_length=self.max_source_length, pad_to_max_length=True, truncation=True, return_tensors="pt"
-              )            
+                elif self.prompt == 'prompt2':
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " ".join(definition) 
+                    source = f'{word} in context "<extra_id_0>" means {definition}'
+                    target = '<extra_id_0> ' + context
+                
+                elif self.prompt == 'prompt3':
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " ".join(definition) 
+                    source = f'<instance> {word} in context "<extra_id_0>" means {definition}'
+                    target = '<instance> <extra_id_0> ' + context
+                
+                self.encode_each_input(source, target, word, task_id)
             
-            e = self.tokenizer.encode(word)[:-1]
-            if len(e) < 1:
-                e = [2]
+            
+            elif self.task == 'ins-gen-and-def-gen':
+                if self.prompt == 'baseline':
+                    #! def-gen
+                    word_ = "word: " + word
+                    context = " context: " + " ".join(example).replace('<TRG>', word)
+                    source_1 = word_ + sememe + context  
+                    target_1 = " ".join(definition) 
+                    
+                    #! ins-gen
+                    source_2 = word_ + sememe +  " definition: " + " ".join(definition) 
+                    target_2 = " ".join(example).replace('<TRG>', word)
+                    
                 
-            self.inputs.append(src)
-            self.targets.append(trg)    
-            #! 就是单纯这个词
-            self.target_word.append(e)  # remove eos token
+                elif self.prompt == 'prompt1':
+                    #! def-gen
+                    word_ = "word: " + word
+                    context = " context: "+" ".join(example).replace('<TRG>', word)
+                    defintion = " ".join(definition) 
+                    source_1 = '<definition> ' + word_ + sememe + context
+                    target_1 = '<definition> ' + definition
+                    
+                    #! ins-gen
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " definition: " + " ".join(definition) 
+                    source_2 = '<instance> ' + word_ + sememe + definition
+                    target_2 = '<instance> ' + context
+                
+                elif self.prompt == 'prompt2':
+                    #! def-gen
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " ".join(definition) 
+                    source_1 = f'{word} in context "{context}" means <extra_id_0>'
+                    target_1 = '<extra_id_0> ' + definition
+                    
+                    #! ins-gen
+                    source_2 = f'{word} in context "<extra_id_0>" means {definition}'
+                    target_2 = '<extra_id_0> ' + context
+                
+                elif self.prompt == 'prompt3':
+                    #! def-gen
+                    context = " ".join(example).replace('<TRG>', word)
+                    definition = " ".join(definition) 
+                    source_1 = f'<definition> {word} in context "{context}" means <extra_id_0>'
+                    target_1 = '<definition> <extra_id_0> ' + definition
+                    
+                    #! ins-gen
+                    source_2 = f'<instance> {word} in context "<extra_id_0>" means {definition}'
+                    target_2 = '<instance> <extra_id_0> ' + context
+                    
+                    
+                self.encode_each_input(source_1, target_1, word, 0) #! 先 def_gen, 在 ins_gen
+                self.encode_each_input(source_2, target_2, word, 1)
+                
+            
+            elif self.task == 'ins-gen-and-def-gen-with-contras':
+                if self.prompt == 'baseline':
+                    pass
+            
+                elif self.prompt == 'prompt1':
+                    pass
+                
+                elif self.prompt == 'prompt2':
+                    pass
+                
+                elif self.prompt == 'prompt3':
+                    pass
+                
+                
+            # src = self.tokenizer.batch_encode_plus(
+            #       [source], max_length=self.max_source_length, pad_to_max_length=True, truncation=True, return_tensors="pt"
+            #   )
+            # trg = self.tokenizer.batch_encode_plus(
+            #       [target], max_length=self.max_source_length, pad_to_max_length=True, truncation=True, return_tensors="pt"
+            #   )            
+            
+            # e = self.tokenizer.encode(word)[:-1]
+            # if len(e) < 1:
+            #     e = [2]
+                
+            # self.inputs.append(src)
+            # self.targets.append(trg)    
+            # #! 就是单纯这个词
+            # self.target_word.append(e)  # remove eos token
                  
         print(len(self.inputs))           
 
@@ -304,13 +452,15 @@ class Seq2SeqDataset(Dataset):
         y = trim_batch(target_ids, pad_token_id)
         
         words = [x["target_word"] for x in batch]
+        task_ids = [x["task_id"] for x in batch]
         #! target_word 就是被释义词
         #! 这边 attention_mask 是 source_mask, 没有 tgt_mask, 是有问题的
         batch = {
             "input_ids": source_ids,
             "attention_mask": source_mask,
             "decoder_input_ids": y,
-            "target_word": words
+            "target_word": words,
+            "task_ids":task_ids
         }
         return batch
     

@@ -59,7 +59,7 @@ num_nodes: 1
 num_processes: 1
 num_sanity_val_steps: 2
 num_workers: 1
-output_dir: ../output/wordnet-ins-gen-baseline-1-3e-4/
+output_dir: ../output/wordnet-ins-gen-prompt3-1-3e-4/
 overfit_batches: 0.0
 overfit_pct: null
 precision: 32
@@ -67,7 +67,7 @@ prepare_data_per_node: true
 process_position: 0
 profiler: null
 progress_bar_refresh_rate: 1
-prompt: baseline
+prompt: prompt3
 reload_dataloaders_every_epoch: false
 replace_sampler_ddp: true
 resume_ckpt: false
@@ -79,10 +79,12 @@ self_ref: true
 sync_batchnorm: false
 task: ins-gen
 terminate_on_nan: false
+test_checkpoint: ../output/wordnet-ins-gen-prompt3-1-3e-4/val_avg_bleu=0.0802-epoch_count=2.ckpt
 test_dataset: test
 test_max_target_length: 150
 test_percent_check: null
 tokenizer_name: null
+tpu_cores: null
 track_grad_norm: -1
 train_batch_size: 1
 train_percent_check: null
