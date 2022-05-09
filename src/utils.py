@@ -194,7 +194,6 @@ class Seq2SeqDataset(Dataset):
                 word_egs.append((word, eg.split(' ')))
         return word_egs
 
-    #! 例句生成这里要处理一下
     def add_examples(self, word_char_vec_desc, word_egs):
         word_char_vec_desc_eg = []
         for i, (word, desc) in enumerate(word_char_vec_desc):
@@ -207,41 +206,41 @@ class Seq2SeqDataset(Dataset):
             word_char_vec_desc_eg.append((word, desc, eg_id))
         return word_char_vec_desc_eg  
 
-    def read_beams(self, path, ignore_sense_id):
-        assert os.path.exists(path)
-        word_egs = []
-        with open(path, 'r', encoding='utf-8') as f:
-            for i, line in enumerate(f):
-                eg = line.strip()
-                word_egs.append(eg.split(' '))
-        return word_egs
+    # def read_beams(self, path, ignore_sense_id):
+    #     assert os.path.exists(path)
+    #     word_egs = []
+    #     with open(path, 'r', encoding='utf-8') as f:
+    #         for i, line in enumerate(f):
+    #             eg = line.strip()
+    #             word_egs.append(eg.split(' '))
+    #     return word_egs
 
-    def add_beams(self, word_char_vec_desc, word_egs):
-        contexts = self.read_examples((self.data_dir+'{}.eg'.format(self.type_path.split('_')[-1])), self.ignore_sense_id)
+    # def add_beams(self, word_char_vec_desc, word_egs):
+    #     contexts = self.read_examples((self.data_dir+'{}.eg'.format(self.type_path.split('_')[-1])), self.ignore_sense_id)
         
-        unique = []
-        if self.ignore_duplicates:
-            words = set()
-            for i in range(len(word_char_vec_desc)):
-                word = word_char_vec_desc[i][0].split('%', 1)[0]
-                if word not in words:
-                    unique.append(i)
-                    words.add(word)
+    #     unique = []
+    #     if self.ignore_duplicates:
+    #         words = set()
+    #         for i in range(len(word_char_vec_desc)):
+    #             word = word_char_vec_desc[i][0].split('%', 1)[0]
+    #             if word not in words:
+    #                 unique.append(i)
+    #                 words.add(word)
                                       
-            word_char_vec_desc =  [line for index,line in enumerate(word_char_vec_desc) if index in unique]
-            contexts = [line for index,line in enumerate(contexts) if index in unique]
-        else:
-            contexts = [line for index,line in enumerate(contexts) if index not in self.self_refs]
+    #         word_char_vec_desc =  [line for index,line in enumerate(word_char_vec_desc) if index in unique]
+    #         contexts = [line for index,line in enumerate(contexts) if index in unique]
+    #     else:
+    #         contexts = [line for index,line in enumerate(contexts) if index not in self.self_refs]
 
-        beam = len(word_egs) // len(contexts)
-        print(beam, len(word_egs), len(contexts))
-        word_char_vec_desc_eg = []
-        for i, egs in enumerate(word_egs):
-            pred_def = []
-            for w in egs:
-                pred_def.append(w)
-            word_char_vec_desc_eg.append((word_char_vec_desc[int(i/beam)][0], pred_def, contexts[int(i/beam)][1]))
-        return word_char_vec_desc_eg  
+    #     beam = len(word_egs) // len(contexts)
+    #     print(beam, len(word_egs), len(contexts))
+    #     word_char_vec_desc_eg = []
+    #     for i, egs in enumerate(word_egs):
+    #         pred_def = []
+    #         for w in egs:
+    #             pred_def.append(w)
+    #         word_char_vec_desc_eg.append((word_char_vec_desc[int(i/beam)][0], pred_def, contexts[int(i/beam)][1]))
+    #     return word_char_vec_desc_eg  
 
     def encode_each_input(self, source, target, word, task_id):
         src = self.tokenizer.batch_encode_plus(
@@ -275,7 +274,8 @@ class Seq2SeqDataset(Dataset):
                     break  
             #! 这里指定数据的输入格式
             #! 两个空格
-            sememe = "  "
+            #! 可能是这个导致 loss 有一点点区别
+            sememe = "　"
                 
             # if option:
             #     if option == "t5_general":
@@ -302,7 +302,7 @@ class Seq2SeqDataset(Dataset):
                 elif self.prompt == 'prompt1':
                     word_ = "word: " + word
                     context = " context: "+" ".join(example).replace('<TRG>', word)
-                    defintion = " ".join(definition) 
+                    definition = " ".join(definition) 
                     source = '<definition> ' + word_ + sememe + context
                     target = '<definition> ' + definition
                     
