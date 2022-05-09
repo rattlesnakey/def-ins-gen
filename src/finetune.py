@@ -418,11 +418,14 @@ class SummarizationModule(pl.LightningModule):
             tar = item[1].split() if len(item[1].split())>0 else ['dummy']
             bleu = bleu_score.sentence_bleu([tar], pred,
                             smoothing_function=bleu_score.SmoothingFunction().method2, auto_reweigh=True)
-            #! nist 分数 nltk 支持好像有点问题
-            try:
-                nist = nist_score.sentence_nist([tar], pred,)
-            except ZeroDivisionError: 
-                nist = 0
+            #! nist 分数 nltk 支持好像有点问题(修复)
+            n = 5
+            # try:
+            if len(pred) < 5:
+                n = len(pred)
+            nist = nist_score.sentence_nist([tar], pred, n)
+            # except ZeroDivisionError: 
+            #     nist = 0
             avg_bleu.append(bleu)
             avg_nist.append(nist)
             
