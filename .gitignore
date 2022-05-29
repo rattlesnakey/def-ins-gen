@@ -5,3 +5,4 @@ zip/
 .vscode/
 .history/
 src/__pycache__
+*log
