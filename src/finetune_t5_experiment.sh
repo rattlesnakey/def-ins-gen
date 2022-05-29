@@ -3,21 +3,29 @@
 # export PYTHONPATH="../":"${PYTHONPATH}"
 set -e 
 
-TRAIN_BATCH_SIZE=1
+TRAIN_BATCH_SIZE=2
 TEST_BATCH_SIZE=1
 MAX_LEN=120
 BEAM_SIZE=100
-NUM_EPOCHS=4
-
-MODEL=t5-small
+NUM_EPOCHS=1
+#try
+MODEL=../pretrained_models/t5
 DATASET=wordnet
-TASK=def-gen #! ins-gen-and-def-gen-with-contras
+TASK=only-contras #! def-gen,ins-gen-and-def-gen, def-gen-with-contras, only-contras
 LR=3e-4
 DATA_DIR=../data/${DATASET}/
-PROMPT=prompt2  #! baseline, prompt1, prompt2, prompt3 
-T5_OUTPUT_DIR=../output/${DATASET}-${TASK}-${PROMPT}-${TRAIN_BATCH_SIZE}-${LR}/
+PROMPT=baseline #! baseline, prompt1, prompt2, prompt3 
+WARMUPS=10
 DEF_GEN_RATIO=1.0
-INS_GEN_RATIO=1.0
+INS_GEN_RATIO=0.0
+CONTRASTIVE_RATIO=0.8
+POOLING_METHOD=max #! average、max、None
+SHUFFLE=yes
+CKPT_PATH=../output/wordnet-def-gen-baseline-2-3e-4-10-1-1.0-0.0-None-yes
+T5_OUTPUT_DIR=../output/${DATASET}-${TASK}-${PROMPT}-${TRAIN_BATCH_SIZE}-${LR}-${WARMUPS}-${NUM_EPOCHS}-${DEF_GEN_RATIO}-${CONTRASTIVE_RATIO}-${POOLING_METHOD}-${SHUFFLE}/
+CUDA=7
+
+
 # T5_GENERAL_OUTPUT_DIR=../output/t5_general/${DATASET}/
 # T5_SPECIFIC_OUTPUT_DIR=../output/t5_specific/${DATASET}/
 # SCORE_DIR=../output/evaluation_scores-${TASK}-${TRAIN_BATCH_SIZE}-${LR}/
@@ -25,6 +33,7 @@ INS_GEN_RATIO=1.0
 
 # mkdir -p ${SCORE_DIR}
 mkdir -p ${T5_OUTPUT_DIR}
+mkdir -p ../logs
 
 # might need to change permission  eg. chmod +x ./sentence-bleu
 
@@ -32,22 +41,34 @@ mkdir -p ${T5_OUTPUT_DIR}
 # train T5, T5-general and T5-specific and generate T5 predictions for validation set and test set
 
 # train T5
-# export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=${CUDA}
 #! --gpus 0 表示用 cpu, --gpus 1 的时候就是用一个 GPU
 #! sample 是采样几条数据来测试，完整跑的时候不用传
+
+# --ckpt_path $CKPT_PATH \
 python -u finetune.py --model_name_or_path $MODEL \
     --data_dir $DATA_DIR --learning_rate $LR \
-    --early_stopping_patience 5 --train_batch_size $TRAIN_BATCH_SIZE \
+    --early_stopping_patience 40 --train_batch_size $TRAIN_BATCH_SIZE \
     --eval_batch_size $TEST_BATCH_SIZE --output_dir $T5_OUTPUT_DIR \
     --max_source_length $MAX_LEN --max_target_length $MAX_LEN \
     --num_train_epochs $NUM_EPOCHS --gpus 0 --do_train --do_predict \
     --task $TASK \
+    --pooling_method $POOLING_METHOD \
+    --weight_decay 0.001 \
+    --warmup_steps $WARMUPS \
     --prompt $PROMPT \
-    --sample 2 \
-    --num_workers 1 \
+    --num_workers 4 \
+    --sample 4 \
+    --shuffle $SHUFFLE \
     --ins_gen_ratio $INS_GEN_RATIO --def_gen_ratio $DEF_GEN_RATIO \
-    --test_dataset test
+    --contrastive_ratio $CONTRASTIVE_RATIO \
+    --test_dataset test \
+    # --ckpt_path $CKPT_PATH 
 
+#> ../logs/${DATASET}_${PROMPT}_${TASK}_${LR}_${TRAIN_BATCH_SIZE}_${DEF_GEN_RATIO}_${INS_GEN_RATIO}_training.log 2>&1 &  
+# wait 
+
+#python get_final_score.py ${T5_OUTPUT_DIR} > ../logs/${DATASET}_${PROMPT}_${TASK}_${LR}_${TRAIN_BATCH_SIZE}_${DEF_GEN_RATIO}_${INS_GEN_RATIO}_testing.log 2>&1 &
 # train T5-specific 
 # export CUDA_VISIBLE_DEVICES=1
 # python finetune.py --model_name_or_path $MODEL --data_dir $DATA_DIR --learning_rate 3e-4 --early_stopping_patience 5 --train_batch_size $TRAIN_BATCH_SIZE --eval_batch_size $TEST_BATCH_SIZE --output_dir $T5_SPECIFIC_OUTPUT_DIR --max_source_length $MAX_LEN --max_target_length $MAX_LEN --num_train_epochs $NUM_EPOCHS --gpus 1 --do_train --option "t5_specific" &

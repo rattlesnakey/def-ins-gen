@@ -4,3 +4,4 @@ output/
 zip/
 .vscode/
 .history/
+src/__pycache__

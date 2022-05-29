@@ -98,6 +98,10 @@ class Seq2SeqDataset(Dataset):
         
         #! 记录每个 sample 是 ins-gen 还是 def-gen, def-gen 是0，ins-gen 是1
         self.task_ids = []
+        
+        #! 被释义词的 subword id list 在 input 里面的区间
+        self.word_spans = []
+        
         self.inputs = []
         self.targets = []
         self.target_word = []        
@@ -122,8 +126,9 @@ class Seq2SeqDataset(Dataset):
         #! 加了个 task_id
         task_id = self.task_ids[index]
         
+        word_span = self.word_spans[index]
         return {"source_ids": source_ids, "source_mask": src_mask,
-                "target_ids": target_ids, "target_mask": target_mask, "target_word": word, "task_id":task_id}   
+                "target_ids": target_ids, "target_mask": target_mask, "target_word": word, "task_id":task_id, "word_span":word_span}   
         
         
     #! train_src = both 的时候，不会执行 continue
@@ -194,6 +199,7 @@ class Seq2SeqDataset(Dataset):
                 word_egs.append((word, eg.split(' ')))
         return word_egs
 
+    #! 例句生成这里要处理一下
     def add_examples(self, word_char_vec_desc, word_egs):
         word_char_vec_desc_eg = []
         for i, (word, desc) in enumerate(word_char_vec_desc):
@@ -206,41 +212,41 @@ class Seq2SeqDataset(Dataset):
             word_char_vec_desc_eg.append((word, desc, eg_id))
         return word_char_vec_desc_eg  
 
-    # def read_beams(self, path, ignore_sense_id):
-    #     assert os.path.exists(path)
-    #     word_egs = []
-    #     with open(path, 'r', encoding='utf-8') as f:
-    #         for i, line in enumerate(f):
-    #             eg = line.strip()
-    #             word_egs.append(eg.split(' '))
-    #     return word_egs
+    def read_beams(self, path, ignore_sense_id):
+        assert os.path.exists(path)
+        word_egs = []
+        with open(path, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                eg = line.strip()
+                word_egs.append(eg.split(' '))
+        return word_egs
 
-    # def add_beams(self, word_char_vec_desc, word_egs):
-    #     contexts = self.read_examples((self.data_dir+'{}.eg'.format(self.type_path.split('_')[-1])), self.ignore_sense_id)
+    def add_beams(self, word_char_vec_desc, word_egs):
+        contexts = self.read_examples((self.data_dir+'{}.eg'.format(self.type_path.split('_')[-1])), self.ignore_sense_id)
         
-    #     unique = []
-    #     if self.ignore_duplicates:
-    #         words = set()
-    #         for i in range(len(word_char_vec_desc)):
-    #             word = word_char_vec_desc[i][0].split('%', 1)[0]
-    #             if word not in words:
-    #                 unique.append(i)
-    #                 words.add(word)
+        unique = []
+        if self.ignore_duplicates:
+            words = set()
+            for i in range(len(word_char_vec_desc)):
+                word = word_char_vec_desc[i][0].split('%', 1)[0]
+                if word not in words:
+                    unique.append(i)
+                    words.add(word)
                                       
-    #         word_char_vec_desc =  [line for index,line in enumerate(word_char_vec_desc) if index in unique]
-    #         contexts = [line for index,line in enumerate(contexts) if index in unique]
-    #     else:
-    #         contexts = [line for index,line in enumerate(contexts) if index not in self.self_refs]
+            word_char_vec_desc =  [line for index,line in enumerate(word_char_vec_desc) if index in unique]
+            contexts = [line for index,line in enumerate(contexts) if index in unique]
+        else:
+            contexts = [line for index,line in enumerate(contexts) if index not in self.self_refs]
 
-    #     beam = len(word_egs) // len(contexts)
-    #     print(beam, len(word_egs), len(contexts))
-    #     word_char_vec_desc_eg = []
-    #     for i, egs in enumerate(word_egs):
-    #         pred_def = []
-    #         for w in egs:
-    #             pred_def.append(w)
-    #         word_char_vec_desc_eg.append((word_char_vec_desc[int(i/beam)][0], pred_def, contexts[int(i/beam)][1]))
-    #     return word_char_vec_desc_eg  
+        beam = len(word_egs) // len(contexts)
+        print(beam, len(word_egs), len(contexts))
+        word_char_vec_desc_eg = []
+        for i, egs in enumerate(word_egs):
+            pred_def = []
+            for w in egs:
+                pred_def.append(w)
+            word_char_vec_desc_eg.append((word_char_vec_desc[int(i/beam)][0], pred_def, contexts[int(i/beam)][1]))
+        return word_char_vec_desc_eg  
 
     def encode_each_input(self, source, target, word, task_id):
         src = self.tokenizer.batch_encode_plus(
@@ -254,8 +260,18 @@ class Seq2SeqDataset(Dataset):
         if len(e) < 1:
             e = [2]
         
+        #! 找到被释义词在 encode 之后，id 所对应的区间
+        src_tok_list = src['input_ids'][0].tolist()
+        for idx, tok_id in enumerate(src_tok_list):
+            if tok_id == e[0]:
+                start_idx = idx
+            if tok_id == e[-1]:
+                end_idx = idx
+        
+        # import pdb; pdb.set_trace()
         #! 这个地方，不要 [task_id], 
         self.task_ids.append(task_id)
+        self.word_spans.append((start_idx, end_idx + 1))
         self.inputs.append(src)
         self.targets.append(trg)    
         #! 就是单纯这个词
@@ -273,8 +289,7 @@ class Seq2SeqDataset(Dataset):
                 if index + 1 > self.sample:
                     break  
             #! 这里指定数据的输入格式
-            #! 两个空格
-            #! 可能是这个导致 loss 有一点点区别
+            #! 两个空格, 不是两个空格，之前改错了
             sememe = "　"
                 
             # if option:
@@ -315,15 +330,15 @@ class Seq2SeqDataset(Dataset):
                 elif self.prompt == 'prompt3':
                     context = " ".join(example).replace('<TRG>', word)
                     definition = " ".join(definition) 
-                    source = f'<definition> {word} in context "{context}" means <extra_id_0>'
-                    target = '<definition> <extra_id_0> ' + definition
+                    source = f'{word} in context "{context}" means <definition>'
+                    target = '<definition> ' + definition
                     
                 self.encode_each_input(source, target, word, task_id)
                 
                 
                 
             elif self.task == 'ins-gen':
-                task_id =1
+                task_id = 1
                 if self.prompt == 'baseline':
                     word_ = "word: " + word
                     source = word_ + sememe +  " definition: " + " ".join(definition) 
@@ -345,8 +360,8 @@ class Seq2SeqDataset(Dataset):
                 elif self.prompt == 'prompt3':
                     context = " ".join(example).replace('<TRG>', word)
                     definition = " ".join(definition) 
-                    source = f'<instance> {word} in context "<extra_id_0>" means {definition}'
-                    target = '<instance> <extra_id_0> ' + context
+                    source = f'{word} in context "<instance>" means {definition}'
+                    target = '<instance> ' + context
                 
                 self.encode_each_input(source, target, word, task_id)
             
@@ -393,30 +408,39 @@ class Seq2SeqDataset(Dataset):
                     #! def-gen
                     context = " ".join(example).replace('<TRG>', word)
                     definition = " ".join(definition) 
-                    source_1 = f'<definition> {word} in context "{context}" means <extra_id_0>'
-                    target_1 = '<definition> <extra_id_0> ' + definition
+                    source_1 = f'{word} in context "{context}" means <definition>'
+                    target_1 = '<definition> ' + definition
                     
                     #! ins-gen
-                    source_2 = f'<instance> {word} in context "<extra_id_0>" means {definition}'
-                    target_2 = '<instance> <extra_id_0> ' + context
+                    source_2 = f'{word} in context "<instance>" means {definition}'
+                    target_2 = '<instance> ' + context
                     
                     
                 self.encode_each_input(source_1, target_1, word, 0) #! 先 def_gen, 在 ins_gen
                 self.encode_each_input(source_2, target_2, word, 1)
                 
             
-            elif self.task == 'ins-gen-and-def-gen-with-contras':
+            elif self.task == 'def-gen-with-contras':
+            #! 这个是 def-gen 和 contras 同时训练
+                task_id = 2
                 if self.prompt == 'baseline':
-                    pass
+                    word_ = "word: " + word
+                    context = " context: " + " ".join(example).replace('<TRG>', word)
+                    source = word_ + sememe + context  
+                    target = " ".join(definition) 
+                    self.encode_each_input(source, target, word, task_id)
+                    
+
             
-                elif self.prompt == 'prompt1':
-                    pass
-                
-                elif self.prompt == 'prompt2':
-                    pass
-                
-                elif self.prompt == 'prompt3':
-                    pass
+            elif self.task == 'only-contras':
+            #! 这个是只有 contras
+                task_id = 3
+                if self.prompt == 'baseline':
+                    word_ = "word: " + word
+                    context = " context: " + " ".join(example).replace('<TRG>', word)
+                    source = word_ + sememe + context  
+                    target = " ".join(definition) 
+                    self.encode_each_input(source, target, word, task_id)
                 
                 
             # src = self.tokenizer.batch_encode_plus(
@@ -453,6 +477,7 @@ class Seq2SeqDataset(Dataset):
         
         words = [x["target_word"] for x in batch]
         task_ids = [x["task_id"] for x in batch]
+        word_spans = [x["word_span"] for x in batch]
         #! target_word 就是被释义词
         #! 这边 attention_mask 是 source_mask, 没有 tgt_mask, 是有问题的
         batch = {
@@ -460,7 +485,8 @@ class Seq2SeqDataset(Dataset):
             "attention_mask": source_mask,
             "decoder_input_ids": y,
             "target_word": words,
-            "task_ids":task_ids
+            "task_ids":task_ids,
+            "word_spans":word_spans
         }
         return batch
     

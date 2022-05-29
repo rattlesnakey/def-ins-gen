@@ -83,10 +83,12 @@ shuffle: 'yes'
 sync_batchnorm: false
 task: only-contras
 terminate_on_nan: false
+test_checkpoint: ../output/wordnet-only-contras-baseline-2-3e-4-10-1-1.0-0.8-max-yes/val_avg_bleu_and_nist=0.0000-epoch_count=2.ckpt
 test_dataset: test
 test_max_target_length: 150
 test_percent_check: null
 tokenizer_name: null
+tpu_cores: null
 track_grad_norm: -1
 train_batch_size: 2
 train_percent_check: null

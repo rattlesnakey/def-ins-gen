@@ -12,6 +12,7 @@ import random
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import json
 from lightning_base import BaseTransformer, add_generic_args, generic_train
@@ -68,20 +69,23 @@ class SummarizationModule(pl.LightningModule):
     #! 这边的这些属性其实也可以直接 self. 来引用
     loss_names = ["loss"]
     metric_names = ["bleu", 'nist']
-    val_metric = "bleu"
+    # val_metric = "bleu"
+    val_metric = 'bleu_and_nist'
 
     def __init__(self, hparams, **kwargs):
         super(SummarizationModule, self).__init__()
         #! 把 
         self.hparams = hparams
         self.output_dir = self.hparams.output_dir
-        if 'mt5' in hparams.model_name_or_path:
-            pass
+        # if 'mt5' in hparams.model_name_or_path:
+        #     pass
 #             self.model = MT5ForConditionalGeneration.from_pretrained(hparams.model_name_or_path)
-        else:
+        # else:
             #! 这边加了 cache_dir
-            self.model = T5ForConditionalGeneration.from_pretrained(hparams.model_name_or_path, cache_dir='../pretrained_models/t5')
-        self.tokenizer = T5Tokenizer.from_pretrained(hparams.model_name_or_path, cache_dir='../pretrained_models/t5')
+            # self.model = T5ForConditionalGeneration.from_pretrained(hparams.model_name_or_path, cache_dir='../pretrained_models/t5')
+        self.model = T5ForConditionalGeneration.from_pretrained(self.hparams.model_name_or_path)
+        # self.tokenizer = T5Tokenizer.from_pretrained(hparams.model_name_or_path, cache_dir='../pretrained_models/t5')
+        self.tokenizer = T5Tokenizer.from_pretrained(self.hparams.model_name_or_path)
         #! 把特殊 token 加进去
         #! 一个 generate 会识别，一个不会
         # special_tokens_dict = {'additional_special_tokens': ['<definition>', '<instance>']}
@@ -142,7 +146,7 @@ class SummarizationModule(pl.LightningModule):
             assert_all_frozen(self.model.get_encoder())
 
 #         self.hparams.git_sha = get_git_info()["repo_sha"]
-        self.num_workers = hparams.num_workers
+        self.num_workers = self.hparams.num_workers
         self.decoder_start_token_id = None
         #! 把 Dataclass 传进来了
         self.dataset_class = Seq2SeqDataset
@@ -174,59 +178,129 @@ class SummarizationModule(pl.LightningModule):
         return lmap(str.strip, clean_text)
 
     #! contrasitve 的话要另外写一个 _step 了
-    def _step(self, batch: dict) -> Tuple:
+    def _step(self, batch: dict,) -> Tuple:
 
         pad_token_id = self.tokenizer.pad_token_id
-        source_ids, source_mask, target_ids = batch["input_ids"], batch["attention_mask"], batch["decoder_input_ids"]
+        #! 这边不知道为啥，word_span 弄不进来
+        source_ids, source_mask, target_ids, word_spans = batch["input_ids"], batch["attention_mask"], batch["decoder_input_ids"], batch['word_spans']
         
         decoder_input_ids = self.model._shift_right(target_ids)
         lm_labels = target_ids
         #! 这个默认就是调用 self.forward 函数哈
         #! 这边应该是自己会生成默认的 tgt_mask 吧？
-        outputs = self(source_ids, attention_mask=source_mask, decoder_input_ids=decoder_input_ids, use_cache=False)
+        #! 这边 outputs 里面是什么?
+        #! 这里要加上 output_hidden_states=True, 这个是 decoder 所有 token output 的 hidden 
+        outputs = self(source_ids, attention_mask=source_mask, 
+                    decoder_input_ids=decoder_input_ids, 
+                    use_cache=False, 
+                    output_hidden_states=True,
+                    output_attentions=True, #! cross_attention & decoder-self attention
+                )
+        #! 这边要把被释义词的那几个 embedding 给切出来
+        # if task_id == 2 or task_id == 3:
+        encoder_hiddens = outputs.encoder_last_hidden_state
+        decoder_hiddens = outputs.decoder_hidden_states[-1]
+        # import pdb; pdb.set_trace()
+        batch_word_embed = []
+        if self.hparams.pooling_method == 'average':
+            #! 这里每个 word 的 token 数量是不一样的，所以不能提取出一个相同 size 的矩阵，只能一个一个遍历然后提取出来
+            #! word embed
+            #! 遍历每个 sample
+            for idx in range(encoder_hiddens.shape[0]):
+                start_idx, end_idx = word_spans[idx]
+                cur_word_embed = torch.mean(encoder_hiddens[idx,start_idx:end_idx,:], dim=0)
+                batch_word_embed.append(cur_word_embed)
 
+            batch_word_embed = torch.stack(batch_word_embed)#! (batch size, 512)
+            batch_definition_embed = torch.mean(decoder_hiddens, dim=1) #! (batch size, 512)
+            
+        elif self.hparams.pooling_method == 'max':
+            for idx in range(encoder_hiddens.shape[0]):
+                start_idx, end_idx = word_spans[idx]
+                # import pdb;pdb.set_trace()
+                cur_word_embed = torch.max(encoder_hiddens[idx,start_idx:end_idx,:], dim=0)[0]
+                batch_word_embed.append(cur_word_embed)
+
+            batch_word_embed = torch.stack(batch_word_embed) #! (batch size, 512)
+            batch_definition_embed = torch.max(decoder_hiddens, dim=1)[0] #! (batch size, 512)
+        
+        
         # Same behavior as modeling_bart.py
         loss_fct = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
-        lm_logits = outputs[0]
+        lm_logits = outputs.logits
         assert lm_logits.shape[-1] == self.model.config.vocab_size
         loss = loss_fct(lm_logits.view(-1, lm_logits.shape[-1]), lm_labels.view(-1))
         
-        return (loss, )
+        # if batch_word_embed:
+        # import pdb;pdb.set_trace()
+        if self.hparams.pooling_method == 'max' or self.hparams.pooling_method == 'average':
+            cosine_sim = torch.matmul(batch_word_embed, batch_definition_embed.T)
+            labels = torch.arange(0, batch_word_embed.shape[0], dtype=torch.int64)
+            # labels = torch.reshape(labels, shape=[-1, 1])
+            contrastive_loss = F.cross_entropy(input=cosine_sim, target=labels)
+            return (loss, contrastive_loss)
+        else:
+            return (loss, )
     #! 这个没用
     # @property
     # def pad(self) -> int:
     #     return self.tokenizer.pad_token_id
     
+    # def get_contrastive_loss(self, batch:dict):
+    #     pass
     #! 返回 loss dict
     def training_step(self, batch, batch_idx) -> Dict:
         #! loss_tensors:(loss,)
         #! 这边其实只有 loss 而已
         #! 这边要把 def-gen 的 loss 和 ins-gen 的 loss 分开得到，然后按比例加和起来
-        def_gen_batch = {'input_ids':[], 'attention_mask':[], 'decoder_input_ids':[]}
+        def_gen_batch = {'input_ids':[], 'attention_mask':[], 'decoder_input_ids':[], 'word_spans':[]}
         ins_gen_batch = {'input_ids':[], 'attention_mask':[], 'decoder_input_ids':[]}
         
         for idx, task_id in enumerate(batch['task_ids']):
-            if task_id == 0:
+            if task_id == 0 or task_id == 2 or task_id == 3:
                 def_gen_batch['input_ids'].append(batch['input_ids'][idx])
                 def_gen_batch['attention_mask'].append(batch['attention_mask'][idx])
                 def_gen_batch['decoder_input_ids'].append(batch['decoder_input_ids'][idx])
+                def_gen_batch['word_spans'].append(batch['word_spans'][idx])
                 
             elif task_id == 1:
                 ins_gen_batch['input_ids'].append(batch['input_ids'][idx])
                 ins_gen_batch['attention_mask'].append(batch['attention_mask'][idx])
                 ins_gen_batch['decoder_input_ids'].append(batch['decoder_input_ids'][idx])
         
-        loss = 0
-        if len(def_gen_batch['input_ids']) > 0:
-            #! 刚才是 list 要转化成 tensor
-            def_gen_batch = {k:torch.stack(v) for k, v in def_gen_batch.items()}
-            def_gen_loss = self._step(def_gen_batch)[0]
-            loss += def_gen_loss * self.hparams.def_gen_ratio
+        # loss = 0
+        # if len(def_gen_batch['input_ids']) > 0:
+        #! 刚才是 list 要转化成 tensor
+        #! 现在全是同样的 task_id 了，因为没有 def_gen 和 ins_gen 一起
+        
+        new_def_gen_batch = {}
+        for k, v in def_gen_batch.items():
+            if k != 'word_spans':
+                new_def_gen_batch[k] = torch.stack(v)
+            else:
+                new_def_gen_batch[k] = def_gen_batch['word_spans']
+        
+        if task_id == 0:
+            # def_gen_batch = {k:torch.stack(v) for k, v in def_gen_batch.items()}
+            def_gen_loss = self._step(new_def_gen_batch)[0]
+            loss = def_gen_loss 
+            
+        elif task_id == 2:
+                    
+            # def_gen_batch = {k:torch.stack(v) for k, v in def_gen_batch.items()}
+            def_gen_loss, contrastive_loss = self._step(new_def_gen_batch)
+            loss = def_gen_loss * self.hparams.def_gen_ratio + contrastive_loss * self.hparams.contrastive_ratio
+        
+        elif task_id == 3:
+            # def_gen_batch = {k:torch.stack(v) for k, v in def_gen_batch.items()}
+            def_gen_loss, contrastive_loss = self._step(new_def_gen_batch)
+            loss = contrastive_loss
+            
 
-        if len(ins_gen_batch['input_ids']) > 0:
-            ins_gen_batch = {k:torch.stack(v) for k, v in ins_gen_batch.items()}
-            ins_gen_loss = self._step(ins_gen_batch)[0]
-            loss += ins_gen_loss * self.hparams.ins_gen_ratio
+        # if len(ins_gen_batch['input_ids']) > 0:
+        #     ins_gen_batch = {k:torch.stack(v) for k, v in ins_gen_batch.items()}
+        #     ins_gen_loss = self._step(ins_gen_batch)[0]
+        #     loss += ins_gen_loss * self.hparams.ins_gen_ratio
         
             
         # loss_tensors = self._step(batch)
@@ -255,7 +329,7 @@ class SummarizationModule(pl.LightningModule):
         preds: List[str] = self.ids_to_clean_text(generated_ids)
         target: List[str] = self.ids_to_clean_text(batch["decoder_input_ids"])
         
-        #! 算loss
+        #! 算loss, 有 contrastive 的和 lm 的
         loss_tensors = self._step(batch)
         #! 这边只有 loss
         base_metrics = {name: loss for name, loss in zip(self.loss_names, loss_tensors)}
@@ -272,14 +346,16 @@ class SummarizationModule(pl.LightningModule):
         return base_metrics
     
     #! 生成文本
+    #! 在训练前，会先执行一次 validation_epoch
     def validation_step(self, batch, batch_idx) -> Dict:
-        def_gen_batch = {'input_ids':[], 'attention_mask':[], 'decoder_input_ids':[]}
+        def_gen_batch = {'input_ids':[], 'attention_mask':[], 'decoder_input_ids':[], 'word_spans':[]}
         ins_gen_batch = {'input_ids':[], 'attention_mask':[], 'decoder_input_ids':[]}
         for idx, task_id in enumerate(batch['task_ids']):
-            if task_id == 0:
+            if task_id == 0 or task_id == 2 or task_id == 3:
                 def_gen_batch['input_ids'].append(batch['input_ids'][idx])
                 def_gen_batch['attention_mask'].append(batch['attention_mask'][idx])
                 def_gen_batch['decoder_input_ids'].append(batch['decoder_input_ids'][idx])
+                def_gen_batch['word_spans'].append(batch['word_spans'][idx])
                 
             elif task_id == 1:
                 ins_gen_batch['input_ids'].append(batch['input_ids'][idx])
@@ -289,8 +365,14 @@ class SummarizationModule(pl.LightningModule):
         metrics = {}
         if len(def_gen_batch['input_ids']) > 0:
             #! 刚才是 list 要转化成 tensor
-            def_gen_batch = {k:torch.stack(v) for k, v in def_gen_batch.items()}
-            def_gen_metrics = self._generative_step(def_gen_batch)
+            new_def_gen_batch = {}
+            for k, v in def_gen_batch.items():
+                if k != 'word_spans':
+                    new_def_gen_batch[k] = torch.stack(v)
+                else:
+                    new_def_gen_batch[k] = def_gen_batch['word_spans']
+
+            def_gen_metrics = self._generative_step(new_def_gen_batch)
             def_gen_loss, def_gen_bleu, def_gen_nist = def_gen_metrics['loss'], def_gen_metrics['bleu'], def_gen_metrics['nist']
             metrics['def_gen_loss'] = def_gen_loss
             metrics['def_gen_bleu'] = def_gen_bleu
@@ -350,8 +432,6 @@ class SummarizationModule(pl.LightningModule):
             metrics['avg_ins_gen_bleu'] = avg_ins_gen_bleu
             metrics['avg_ins_gen_nist'] = avg_ins_gen_nist
                 
-
-
             
         
         # if 'ins_gen_loss' in outputs[0]:
@@ -375,9 +455,9 @@ class SummarizationModule(pl.LightningModule):
         # metrics = {f"val_avg_{k}": x for k, x in losses.items()}
         #! 记录是第几步骤
         metrics["epoch_count"] = self.epoch_count
+        metrics['cur_learning_rate'] = float(self.scheduler.get_lr()[0])
         # print(metrics)
-        #! metric 写到文件里
-        self.save_metrics(metrics, 'val')
+        
         
         #! 这个是要给 log 的，在 early_stop 和 checkpoint 的时候用
         if len(def_gen_nist_list):
@@ -390,14 +470,16 @@ class SummarizationModule(pl.LightningModule):
             metrics['val_avg_loss'] = avg_ins_gen_loss
             metrics['val_avg_nist'] = avg_ins_gen_nist
             
-
-            
-            
+        
+        metrics['val_avg_bleu_and_nist'] = metrics['val_avg_bleu'] + metrics['val_avg_nist']
+        #! metric 写到文件里
+        self.save_metrics(metrics, 'val')
+        
         # self.save_metrics(metrics, 'val')  # writes to self.metrics_save_path
         # preds = flatten_list([x["preds"] for x in outputs])
         # {"log": metrics, "preds": preds, "val_loss": loss, f"val_{self.val_metric}": metrics['val_avg_bleu']}
         #! log 字段下面的 value 好像是会传给 checkpoint callback 去使用的
-        return {"log": metrics, "val_loss": metrics['val_avg_loss'], f"val_{self.val_metric}": metrics['val_avg_bleu']}
+        return {"log": metrics, "val_loss": metrics['val_avg_loss'], f"val_{self.val_metric}": metrics['val_avg_bleu'] + metrics['val_avg_nist'], 'val_avg_bleu_and_nist':metrics['val_avg_bleu'] + metrics['val_avg_nist']}
     
     #! 在 validation_epoch_end 被调用
     
@@ -418,14 +500,11 @@ class SummarizationModule(pl.LightningModule):
             tar = item[1].split() if len(item[1].split())>0 else ['dummy']
             bleu = bleu_score.sentence_bleu([tar], pred,
                             smoothing_function=bleu_score.SmoothingFunction().method2, auto_reweigh=True)
-            #! nist 分数 nltk 支持好像有点问题(修复)
+            #! nist 分数 nltk 支持好像有点问题
             n = 5
-            # try:
-            if len(pred) < 5:
+            if len(pred) < n:
                 n = len(pred)
             nist = nist_score.sentence_nist([tar], pred, n)
-            # except ZeroDivisionError: 
-            #     nist = 0
             avg_bleu.append(bleu)
             avg_nist.append(nist)
             
@@ -486,7 +565,7 @@ class SummarizationModule(pl.LightningModule):
         def_gen_samples = {'source_ids':[], 'source_mask':[], 'bad_word_list':[], 'y':[]}
         ins_gen_samples = {'source_ids':[], 'source_mask':[], 'y':[]}
         for idx, task_id in enumerate(task_ids):
-            if task_id == 0:
+            if task_id == 0 or task_id == 2 or task_id == 3:
                 def_gen_samples['source_ids'].append(source_ids[idx])
                 def_gen_samples['source_mask'].append(source_mask[idx])
                 def_gen_samples['bad_word_list'].append(bad_word_list[idx])
@@ -528,7 +607,7 @@ class SummarizationModule(pl.LightningModule):
             output['def_gen_inputs'] = def_gen_inputs
             output['def_gen_preds'] = def_gen_preds
             output['def_gen_targets'] = def_gen_targets
-            
+            output['words'] = new_def_gen_samples['bad_word_list']
         #! 区别在于 bad_word 用不用
         # elif self.hparams.task  == 'ins-gen':
         if len(ins_gen_samples['source_ids']) != 0:
@@ -672,8 +751,8 @@ class SummarizationModule(pl.LightningModule):
             #! 把结果保存
             with open(output_test_predictions_file, "w",encoding='utf-8') as p_writer:
                 for output_batch in def_gen_batch:
-                    for inp, pred, tgt in zip(output_batch["def_gen_inputs"], output_batch["def_gen_preds"], output_batch["def_gen_targets"]):
-                        p_writer.writelines(json.dumps({'inp':inp, 'pred':pred, 'tgt':tgt}) + '\n')
+                    for inp, pred, tgt, word in zip(output_batch["def_gen_inputs"], output_batch["def_gen_preds"], output_batch["def_gen_targets"], output_batch['words']):
+                        p_writer.writelines(json.dumps({'inp':inp, 'pred':pred, 'tgt':tgt, 'word':word}) + '\n')
                 p_writer.close()
                     # np.array([x[k] for x in outputs]).mean()
             avg_bleu = np.array([x["avg_def_gen_bleu"] for x in def_gen_batch]).mean()
@@ -742,19 +821,10 @@ class SummarizationModule(pl.LightningModule):
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
-        dataloader = self.get_dataloader("train", batch_size=self.hparams.train_batch_size, shuffle=True)
-        t_total = (
-            (len(dataloader.dataset) // (self.hparams.train_batch_size * max(1, self.hparams.gpus)))
-            // self.hparams.accumulate_grad_batches
-            * float(self.hparams.max_epochs)
-        )
-        scheduler = get_linear_schedule_with_warmup(
-            self.opt, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=t_total
-        )
-        if max(scheduler.get_last_lr()) > 0:
-            warnings.warn("All learning rates are 0")
-        #! 这个 sheduler 没用到
-        self.lr_scheduler = scheduler
+        if self.hparams.shuffle == 'yes':
+            dataloader = self.get_dataloader("train", batch_size=self.hparams.train_batch_size, shuffle=True)
+        else:
+            dataloader = self.get_dataloader("train", batch_size=self.hparams.train_batch_size, shuffle=False)
         return dataloader
 
     def val_dataloader(self) -> DataLoader:
@@ -783,8 +853,20 @@ class SummarizationModule(pl.LightningModule):
             },
         ]
         optimizer = AdamW(optimizer_grouped_parameters, lr=self.hparams.learning_rate, eps=self.hparams.adam_epsilon)
+        dataloader = self.get_dataloader("train", batch_size=self.hparams.train_batch_size, shuffle=True)
+        t_total = (
+            (len(dataloader.dataset) // (self.hparams.train_batch_size * max(1, self.hparams.gpus)))
+            // self.hparams.accumulate_grad_batches
+            * float(self.hparams.max_epochs)
+        )
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=t_total
+        )
+        gen_scheduler = {'scheduler':scheduler, 'interval':'step'}
+        self.scheduler = gen_scheduler['scheduler']
+ 
         self.opt = optimizer
-        return [optimizer]
+        return [optimizer], [gen_scheduler]
     
     @staticmethod
     def add_model_specific_args(parser, root_dir):
@@ -850,9 +932,10 @@ def main(args, model=None) -> SummarizationModule:
         logger = True  # don't pollute wandb logs unnecessarily
         
     ck = False
+    
     if args.resume_ckpt:
-        checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "*.ckpt"), recursive=True)))
-        ck = checkpoints[-1]
+        # checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "*.ckpt"), recursive=True)))
+        ck = list(sorted(glob.glob(os.path.join(args.output_dir, "*.ckpt"), recursive=True)))[-1]
     #! 这里是用 bleu metric 来处理的
     es_callback = get_early_stopping_callback(model.val_metric, args.early_stopping_patience)
     
@@ -863,6 +946,15 @@ def main(args, model=None) -> SummarizationModule:
     # callback = PrintTableMetricsCallback()
     # args.tpu_cores = 0
     #! tpu_cores 是一个 function，json 没办法保存
+    if args.ckpt_path:
+        ckpt = list(sorted(glob.glob(os.path.join(args.ckpt_path, "*.ckpt"), recursive=True)))[-1]
+        state_dict = torch.load(ckpt)['state_dict']
+        #! 3.1.0 版本保存的 ckpt 里面多了这个 layer
+        del state_dict['model.decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight']
+        #! 它这个是直接就地 load 的
+        model.load_state_dict(state_dict)
+        print('loading checkpoint done')
+        
     trainer: pl.Trainer = generic_train(
         model,
         args,
@@ -886,7 +978,6 @@ def main(args, model=None) -> SummarizationModule:
     if checkpoints:
         model.hparams.test_checkpoint = checkpoints[-1]
         trainer.resume_from_checkpoint = checkpoints[-1]
-    print(checkpoints[-1])
     # trainer.logger.log_hyperparams(model.hparams)
 
     # test() without a model tests using the best checkpoint automatically
@@ -899,6 +990,34 @@ if __name__ == "__main__":
     parser = pl.Trainer.add_argparse_args(parser)
     #! os.getcwd() 是当前的 root dir, 所以会把模型文件夹放在当前的目录下
     parser = SummarizationModule.add_model_specific_args(parser, os.getcwd())
+
+    parser.add_argument(
+            "--ckpt_path",
+            type=str,
+            default=None,
+            help="checkpoint path",
+        ) 
+
+    parser.add_argument(
+            "--shuffle",
+            type=str,
+            default='yes',
+            help="yes or not for train_dataloader shuffle",
+        )  
+
+    parser.add_argument(
+            "--pooling_method",
+            type=str,
+            default='average',
+            help="average or max",
+        )   
+
+    parser.add_argument(
+            "--contrastive_ratio",
+            type=float,
+            default=1.0,
+            help="contrastive task loss ratio",
+        )   
 
     parser.add_argument(
             "--def_gen_ratio",
@@ -935,7 +1054,7 @@ if __name__ == "__main__":
             "--task",
             type=str,
             default = 'def-gen',
-            help="def-gen or ins-gen or ins-gen-and-def-gen or ins-gen-and-def-gen-with-contras",
+            help="def-gen or ins-gen or ins-gen-and-def-gen or def-gen-with-contras or only-contras",
         )
 
     parser.add_argument(

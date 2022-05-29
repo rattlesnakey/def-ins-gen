@@ -98,6 +98,9 @@ def get_checkpoint_callback(output_dir, metric, save_top_k=1, lower_is_better=Fa
         exp = "{val_avg_bleu:.4f}-{epoch_count}"
     elif metric == "loss":
         exp = "{val_avg_loss:.4f}-{epoch_count}"
+    elif metric == 'bleu_and_nist':
+        exp = "{val_avg_bleu_and_nist:.4f}-{epoch_count}"
+        
     else:
         raise NotImplementedError(
             f"seq2seq callbacks only support rouge2, bleu and loss, got {metric}, You can make your own by adding to this function."
